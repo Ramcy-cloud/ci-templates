@@ -1,0 +1,70 @@
+# Workflow réutilisable : livraison SANS Docker, sous forme d'artefacts de build.
+#
+# Récupère les artefacts produits par la CI (même exécution, ou une autre exécution via run-id),
+# puis les republie en un seul paquet « livraison-<sha> » conservé plus longtemps.
+# Le job utilise un environnement GitHub (« production » par défaut) : si cet environnement
+# a des « required reviewers », la livraison attend une validation manuelle.
+#
+# L'appelant doit accorder « actions: read » au job qui appelle ce workflow.
+name: Artifact delivery (réutilisable)
+
+on:
+  workflow_call:
+    inputs:
+      pattern:
+        description: "Motif des artefacts de build à livrer (ex. « build-* »)."
+        type: string
+        default: "build-*"
+      run-id:
+        description: "Exécution qui a produit les artefacts (défaut : l'exécution courante). Utile avec workflow_run."
+        type: string
+        default: ""
+      sha:
+        description: "Commit livré, utilisé pour nommer le paquet (défaut : github.sha)."
+        type: string
+        default: ""
+      environment:
+        description: "Environnement GitHub utilisé pour la livraison (porte la validation manuelle)."
+        type: string
+        default: "production"
+      retention-days:
+        description: "Durée de conservation du paquet livré (jours, 90 maximum sur un compte gratuit)."
+        type: number
+        default: 90
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  deliver:
+    name: Livrer les artefacts
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Récupérer les artefacts de build
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ inputs.pattern }}
+          path: livraison
+          # Jeton et run-id uniquement pour une AUTRE exécution ; vide = exécution courante.
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ inputs.run-id != '' && github.token || '' }}
+
+      - name: Contenu livré
+        shell: bash
+        run: |
+          {
+            echo "### Paquet livré : livraison-${{ inputs.sha || github.sha }}"
+            echo '```'
+            find livraison -maxdepth 2 | sort
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publier le paquet de livraison
+        uses: actions/upload-artifact@v7
+        with:
+          name: livraison-${{ inputs.sha || github.sha }}
+          path: livraison
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error

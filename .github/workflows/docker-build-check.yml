@@ -1,0 +1,44 @@
+# Workflow réutilisable : construit les images Docker SANS les publier.
+# Sert à vérifier que les Dockerfiles fonctionnent (typiquement sur les pull requests).
+name: Docker build check (réutilisable)
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: >-
+          Liste JSON des images. Chaque élément : {"name": "...", "context": "...", "dockerfile": "..."}.
+          « dockerfile » est optionnel (défaut : <context>/Dockerfile).
+        type: string
+        required: true
+      free-disk-space:
+        description: "Libère ~20 Go sur le runner avant le build (utile pour les images lourdes : torch, CUDA...)."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.image.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+    steps:
+      - name: Libérer de l'espace disque
+        if: inputs.free-disk-space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Construire l'image (sans publication)
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile || format('{0}/Dockerfile', matrix.image.context) }}
+          push: false

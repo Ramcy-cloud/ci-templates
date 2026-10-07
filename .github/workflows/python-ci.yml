@@ -1,0 +1,125 @@
+# Workflow réutilisable : CI d'un projet Python (installation, lint optionnel, tests).
+# Voir le README du dépôt pour un exemple d'appel.
+name: Python CI (réutilisable)
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Dossier du projet Python (relatif à la racine du dépôt)."
+        type: string
+        default: "."
+      python-version:
+        description: "Version de Python."
+        type: string
+        default: "3.11"
+      requirements-file:
+        description: "Fichier de dépendances, relatif à working-directory. Vide = pas d'installation par fichier."
+        type: string
+        default: "requirements.txt"
+      install-command:
+        description: "Commande d'installation supplémentaire (optionnelle), lancée après le fichier de dépendances."
+        type: string
+        default: ""
+      lint-command:
+        description: "Commande de lint (optionnelle, ex. « ruff check . »)."
+        type: string
+        default: ""
+      lint-allow-failure:
+        description: "Si true, un échec du lint est signalé par un avertissement sans faire échouer la CI (dette existante)."
+        type: boolean
+        default: false
+      setup-command:
+        description: "Commande de préparation lancée avant les tests (optionnelle, ex. indexation d'un corpus)."
+        type: string
+        default: ""
+      test-command:
+        description: "Commande de test."
+        type: string
+        default: "pytest"
+      env:
+        description: "Variables d'environnement NON secrètes, une par ligne au format CLE=valeur."
+        type: string
+        default: ""
+      artifact-name:
+        description: "Si renseigné, publie un artefact de ce nom une fois les tests passés."
+        type: string
+        default: ""
+      artifact-path:
+        description: "Chemin(s) de l'artefact, relatifs à la RACINE du dépôt (une ligne par chemin, « !motif » pour exclure)."
+        type: string
+        default: ""
+      artifact-retention-days:
+        description: "Durée de conservation de l'artefact (jours)."
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python (${{ inputs.working-directory }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ inputs.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ inputs.working-directory }}/requirements*.txt
+
+      - name: Variables d'environnement
+        if: inputs.env != ''
+        env:
+          EXTRA_ENV: ${{ inputs.env }}
+        run: printf '%s\n' "$EXTRA_ENV" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' >> "$GITHUB_ENV" || true
+
+      - name: Installer les dépendances
+        env:
+          REQUIREMENTS_FILE: ${{ inputs.requirements-file }}
+          INSTALL_COMMAND: ${{ inputs.install-command }}
+        run: |
+          python -m pip install --upgrade pip
+          if [ -n "$REQUIREMENTS_FILE" ]; then pip install -r "$REQUIREMENTS_FILE"; fi
+          if [ -n "$INSTALL_COMMAND" ]; then bash -eo pipefail -c "$INSTALL_COMMAND"; fi
+
+      - name: Lint
+        if: inputs.lint-command != ''
+        env:
+          CMD: ${{ inputs.lint-command }}
+          ALLOW_FAILURE: ${{ inputs.lint-allow-failure }}
+        run: |
+          if bash -eo pipefail -c "$CMD"; then exit 0; fi
+          if [ "$ALLOW_FAILURE" = "true" ]; then
+            echo "::warning title=Lint en échec (non bloquant)::Le lint signale des erreurs existantes ; voir le log de cette étape."
+            exit 0
+          fi
+          exit 1
+
+      - name: Préparation
+        if: inputs.setup-command != ''
+        env:
+          CMD: ${{ inputs.setup-command }}
+        run: bash -eo pipefail -c "$CMD"
+
+      - name: Tests
+        if: inputs.test-command != ''
+        env:
+          CMD: ${{ inputs.test-command }}
+        run: bash -eo pipefail -c "$CMD"
+
+      - name: Publier l'artefact
+        if: inputs.artifact-name != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-path }}
+          retention-days: ${{ inputs.artifact-retention-days }}
+          if-no-files-found: error
+          include-hidden-files: false

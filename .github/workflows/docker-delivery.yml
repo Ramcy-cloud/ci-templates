@@ -1,0 +1,109 @@
+# Workflow réutilisable : construit et PUBLIE des images Docker sur GitHub Container Registry (ghcr.io).
+#
+# Le job utilise un environnement GitHub (« production » par défaut) : si cet environnement
+# a des « required reviewers », la publication attend une validation manuelle.
+#
+# Nom des images : ghcr.io/<propriétaire>/<dépôt><séparateur><name>, tout en minuscules
+# (Docker refuse les majuscules, or « Ramcy-cloud » en contient).
+# Tags publiés : <sha complet du commit> et latest.
+#
+# L'appelant doit accorder « packages: write » au job qui appelle ce workflow.
+name: Docker delivery (réutilisable)
+
+on:
+  workflow_call:
+    inputs:
+      images:
+        description: >-
+          Liste JSON des images. Chaque élément : {"name": "...", "context": "...", "dockerfile": "..."}.
+          « dockerfile » est optionnel (défaut : <context>/Dockerfile).
+        type: string
+        required: true
+      environment:
+        description: "Environnement GitHub utilisé pour la livraison (porte la validation manuelle)."
+        type: string
+        default: "production"
+      ref:
+        description: "Commit à livrer (défaut : le commit qui a déclenché le workflow). Utile avec workflow_run."
+        type: string
+        default: ""
+      separator:
+        description: "Séparateur entre le nom du dépôt et le nom de l'image (« / » ou « - »)."
+        type: string
+        default: "/"
+      free-disk-space:
+        description: "Libère ~20 Go sur le runner avant le build (utile pour les images lourdes)."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Publier ${{ matrix.image.name }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+    steps:
+      - name: Libérer de l'espace disque
+        if: inputs.free-disk-space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+
+      - name: Nom et tags de l'image (en minuscules)
+        id: meta
+        shell: bash
+        env:
+          REPO: ${{ github.repository }}
+          SEPARATOR: ${{ inputs.separator }}
+          NAME: ${{ matrix.image.name }}
+        run: |
+          image="ghcr.io/${REPO}${SEPARATOR}${NAME}"
+          image="${image,,}"
+          sha="$(git rev-parse HEAD)"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            echo "$image:$sha"
+            echo "$image:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Construire et publier
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.image.context }}
+          file: ${{ matrix.image.dockerfile || format('{0}/Dockerfile', matrix.image.context) }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ inputs.ref || github.sha }}
+
+      - name: Résumé
+        shell: bash
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### Image publiée : ${{ matrix.image.name }}"
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

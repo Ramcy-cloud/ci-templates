@@ -1,0 +1,116 @@
+# Workflow réutilisable : CI d'un projet Node.js (npm ci, lint/test/build optionnels).
+# Voir le README du dépôt pour un exemple d'appel.
+name: Node CI (réutilisable)
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Dossier du projet Node (celui qui contient package.json et package-lock.json)."
+        type: string
+        default: "."
+      node-version:
+        description: "Version de Node.js (Vite 8 exige 20.19+ ou 22.12+)."
+        type: string
+        default: "22"
+      install-command:
+        description: "Commande d'installation des dépendances."
+        type: string
+        default: "npm ci"
+      lint-command:
+        description: "Commande de lint (optionnelle, ex. « npm run lint »)."
+        type: string
+        default: ""
+      lint-allow-failure:
+        description: "Si true, un échec du lint est signalé par un avertissement sans faire échouer la CI (dette existante)."
+        type: boolean
+        default: false
+      test-command:
+        description: "Commande de test (optionnelle, ex. « npm test »)."
+        type: string
+        default: ""
+      build-command:
+        description: "Commande de build (optionnelle, ex. « npm run build »)."
+        type: string
+        default: ""
+      env:
+        description: "Variables d'environnement NON secrètes, une par ligne au format CLE=valeur."
+        type: string
+        default: ""
+      artifact-name:
+        description: "Si renseigné, publie un artefact de ce nom après le build."
+        type: string
+        default: ""
+      artifact-path:
+        description: "Chemin(s) de l'artefact, relatifs à la RACINE du dépôt (une ligne par chemin, « !motif » pour exclure)."
+        type: string
+        default: ""
+      artifact-retention-days:
+        description: "Durée de conservation de l'artefact (jours)."
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: Node (${{ inputs.working-directory }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+
+      - name: Variables d'environnement
+        if: inputs.env != ''
+        env:
+          EXTRA_ENV: ${{ inputs.env }}
+        run: printf '%s\n' "$EXTRA_ENV" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' >> "$GITHUB_ENV" || true
+
+      - name: Installer les dépendances
+        env:
+          CMD: ${{ inputs.install-command }}
+        run: bash -eo pipefail -c "$CMD"
+
+      - name: Lint
+        if: inputs.lint-command != ''
+        env:
+          CMD: ${{ inputs.lint-command }}
+          ALLOW_FAILURE: ${{ inputs.lint-allow-failure }}
+        run: |
+          if bash -eo pipefail -c "$CMD"; then exit 0; fi
+          if [ "$ALLOW_FAILURE" = "true" ]; then
+            echo "::warning title=Lint en échec (non bloquant)::Le lint signale des erreurs existantes ; voir le log de cette étape."
+            exit 0
+          fi
+          exit 1
+
+      - name: Tests
+        if: inputs.test-command != ''
+        env:
+          CMD: ${{ inputs.test-command }}
+        run: bash -eo pipefail -c "$CMD"
+
+      - name: Build
+        if: inputs.build-command != ''
+        env:
+          CMD: ${{ inputs.build-command }}
+        run: bash -eo pipefail -c "$CMD"
+
+      - name: Publier l'artefact
+        if: inputs.artifact-name != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-path }}
+          retention-days: ${{ inputs.artifact-retention-days }}
+          if-no-files-found: error
