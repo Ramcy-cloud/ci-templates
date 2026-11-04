@@ -23,6 +23,7 @@ Le tag `v1` est stable : les corrections compatibles y sont publiées, les chang
 | [`docker-build-check.yml`](.github/workflows/docker-build-check.yml) | Construit les images Docker **sans les publier** (vérifie les Dockerfiles) |
 | [`docker-delivery.yml`](.github/workflows/docker-delivery.yml) | Construit et **publie** les images sur `ghcr.io`, derrière un environnement GitHub |
 | [`artifact-delivery.yml`](.github/workflows/artifact-delivery.yml) | Livraison sans Docker : republie les artefacts de build, derrière un environnement GitHub |
+| [`verifie-base-pr.yml`](.github/workflows/verifie-base-pr.yml) | Verrou du flux de branches : refuse une PR qui cible `main` sans venir de `dev` |
 
 ---
 
@@ -136,6 +137,42 @@ Le job appelant doit accorder `actions: read`.
 
 ---
 
+### `verifie-base-pr.yml`
+
+Verrou du flux de branches : **fait échouer** une pull request qui cible une branche protégée
+(`main`) sans venir d'une source autorisée (`dev`). Transforme la règle « `dev` avant `main` »
+en vérification mécanique, au lieu d'une consigne qui ne tient que par la discipline.
+
+| Entrée | Défaut | Description |
+| --- | --- | --- |
+| `branche-protegee` | `main` | Branche dont on contrôle l'accès (la base de la PR) |
+| `sources-autorisees` | `dev` | Branches autorisées, séparées par des virgules ou des retours à la ligne. Motifs glob acceptés (ex. `hotfix/*`) |
+| `avertissement-seulement` | `false` | `true` : signale sans faire échouer la CI (adoption progressive sur un dépôt qui a déjà de la dette) |
+
+```yaml
+  flux-de-branches:
+    name: Flux de branches
+    uses: Ramcy-cloud/ci-templates/.github/workflows/verifie-base-pr.yml@v1
+```
+
+Autoriser en plus les correctifs urgents, en connaissance de cause :
+
+```yaml
+    with:
+      sources-autorisees: "dev, hotfix/*"
+```
+
+Le job ne fait **aucun checkout** (il ne lit que le contexte de l'événement) et ne s'exécute que
+sur un événement `pull_request` : appelé lors d'un push, il est simplement ignoré.
+
+> **Le verrou ne mord qu'une fois déclaré obligatoire.** Tant que le job n'est pas un
+> *required status check*, une PR en échec reste fusionnable. Côté dépôt :
+> *Settings → Rules → Rulesets → New ruleset*, cible `main`, cocher *Require status checks to pass*
+> et y ajouter **`Flux de branches`**. Les règles de protection de branche ne sont pas disponibles
+> sur un dépôt **privé** d'un compte gratuit : là, le substitut est un hook `pre-push` local.
+
+---
+
 ## Choisir le mode de validation manuelle
 
 **Dépôt public** — environnement avec validation :
@@ -189,3 +226,5 @@ jobs:
 `actions/checkout@v7`, `actions/setup-python@v7`, `actions/setup-node@v7`, `actions/upload-artifact@v7`,
 `actions/download-artifact@v8`, `docker/setup-buildx-action@v4`, `docker/login-action@v4`, `docker/build-push-action@v7`.
 Chaque workflow déclare des `permissions` minimales (`contents: read`, plus `packages: write` ou `actions: read` uniquement là où c'est nécessaire).
+
+`verifie-base-pr.yml` n'utilise aucune action : il lit le contexte de l'événement et n'a donc pas besoin de checkout. Les noms de branches y passent par l'environnement et jamais par une interpolation dans le script, pour qu'un nom contenant des métacaractères du shell ne puisse pas s'exécuter.

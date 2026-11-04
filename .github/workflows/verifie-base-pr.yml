@@ -1,0 +1,96 @@
+# Workflow réutilisable : verrou du flux de branches.
+#
+# Fait échouer une pull request qui cible une branche protégée (par défaut
+# « main ») sans venir d'une source autorisée (par défaut « dev »). Transforme
+# la règle « dev avant main » en vérification mécanique : une fois ce job
+# déclaré comme status check obligatoire sur la branche protégée, la violation
+# devient impossible au lieu d'être simplement découragée.
+#
+# Ne nécessite aucun checkout : le job ne lit que le contexte de l'événement.
+# Voir le README du dépôt pour un exemple d'appel.
+name: Verifie la base d'une PR (réutilisable)
+
+on:
+  workflow_call:
+    inputs:
+      branche-protegee:
+        description: "Branche dont on contrôle l'accès, c'est-à-dire la base de la PR."
+        type: string
+        default: "main"
+      sources-autorisees:
+        description: "Branches autorisées à ouvrir une PR vers la branche protégée. Séparées par des virgules ou des retours à la ligne. Motifs glob acceptés (ex. « hotfix/* »)."
+        type: string
+        default: "dev"
+      avertissement-seulement:
+        description: "Si true, signale la violation par un avertissement sans faire échouer la CI (adoption progressive sur un dépôt qui a déjà de la dette)."
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  flux-de-branches:
+    name: Flux de branches
+    runs-on: ubuntu-latest
+    # Hors pull request, une PR n'a pas de base : il n'y a rien à vérifier.
+    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+    steps:
+      - name: Vérifier la branche source de la pull request
+        shell: bash
+        # Les noms de branches passent par l'environnement et jamais par une
+        # interpolation dans le script : un nom contenant des métacaractères du
+        # shell ne doit pas pouvoir s'exécuter.
+        env:
+          BASE: ${{ github.base_ref }}
+          SOURCE: ${{ github.head_ref }}
+          PROTEGEE: ${{ inputs.branche-protegee }}
+          AUTORISEES: ${{ inputs.sources-autorisees }}
+          AVERTISSEMENT: ${{ inputs.avertissement-seulement }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$BASE" ] || [ -z "$SOURCE" ]; then
+            echo "::error title=Contexte inattendu::Impossible de lire la base ou la source de la pull request."
+            exit 1
+          fi
+
+          echo "Pull request : $SOURCE -> $BASE"
+          echo "Branche protégée : $PROTEGEE"
+          echo "Sources autorisées : $AUTORISEES"
+
+          if [ "$BASE" != "$PROTEGEE" ]; then
+            echo "Cette PR ne cible pas la branche protégée : rien à vérifier."
+            exit 0
+          fi
+
+          autorisee=false
+          # Les virgules deviennent des retours à la ligne : les deux
+          # séparateurs sont acceptés dans « sources-autorisees ».
+          while IFS= read -r motif; do
+            # Retire les espaces autour du motif, ignore les lignes vides.
+            motif="${motif#"${motif%%[![:space:]]*}"}"
+            motif="${motif%"${motif##*[![:space:]]}"}"
+            [ -z "$motif" ] && continue
+            # $motif volontairement non quoté : c'est ce qui active le glob.
+            # shellcheck disable=SC2053
+            if [[ "$SOURCE" == $motif ]]; then
+              autorisee=true
+              break
+            fi
+          done < <(printf '%s\n' "$AUTORISEES" | tr ',' '\n')
+
+          if [ "$autorisee" = true ]; then
+            echo "OK : « $SOURCE » est autorisée à ouvrir une pull request vers « $PROTEGEE »."
+            exit 0
+          fi
+
+          message="« $SOURCE » n'est pas autorisée a ouvrir une pull request vers « $PROTEGEE » (sources autorisées : $AUTORISEES). Ouvrez cette PR vers une branche d'intégration, puis promouvez-la vers « $PROTEGEE »."
+
+          if [ "$AVERTISSEMENT" = "true" ]; then
+            echo "::warning title=Flux de branches non respecté::$message"
+            exit 0
+          fi
+
+          echo "::error title=Flux de branches non respecté::$message"
+          exit 1
