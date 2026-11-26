@@ -228,3 +228,9 @@ jobs:
 Chaque workflow déclare des `permissions` minimales (`contents: read`, plus `packages: write` ou `actions: read` uniquement là où c'est nécessaire).
 
 `verifie-base-pr.yml` n'utilise aucune action : il lit le contexte de l'événement et n'a donc pas besoin de checkout. Les noms de branches y passent par l'environnement et jamais par une interpolation dans le script, pour qu'un nom contenant des métacaractères du shell ne puisse pas s'exécuter.
+
+## Licence
+
+© 2026 Ramcy-cloud. Tous droits réservés.
+
+Ce code est consultable publiquement mais n'est pas sous licence libre : aucun droit d'utilisation, de modification ou de redistribution n'est accordé.
